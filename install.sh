@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# install.sh — PhantomStream v1.0 installer
-# Installs to ~/Library/.AppleDiagnostics/ (hidden dot-folder, passes casual inspection)
-# Binary renamed to com.institute.helperd; LaunchAgent: com.institute.syshelper.local.plist
+# install.sh — PhantomStream v2.0 installer
+# Phase 2: Maximum Covert Edition
+# Process: com.institute.backgroundsyncd | Port: 9090 | LaunchAgent: com.institute.backgroundsyncd
 
 set -euo pipefail
 
@@ -13,16 +13,18 @@ warn() { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
 die()  { echo -e "${RED}[ERROR]${RESET} $*" >&2; exit 1; }
 
 INSTALL_DIR="$HOME/Library/.AppleDiagnostics"
-BINARY="$INSTALL_DIR/com.institute.helperd"
-PLIST_NAME="com.institute.syshelper.local.plist"
+DAEMON_NAME="com.institute.backgroundsyncd"
+DAEMON_BIN="$INSTALL_DIR/$DAEMON_NAME"
+FFMPEG_BIN="$INSTALL_DIR/com.institute.helperd"
+PLIST_NAME="com.institute.backgroundsyncd.plist"
 PLIST_DST="$HOME/Library/LaunchAgents/$PLIST_NAME"
-STREAM_PORT=49213
+STREAM_PORT=9090
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXISTING_FFMPEG="$HOME/Library/ProctorTest/ffmpeg"
 
 echo -e "${BOLD}"
 echo "╔══════════════════════════════════════════════════════╗"
-echo "║   PhantomStream v1.0 — Stealth Benchmark Edition     ║"
+echo "║   PhantomStream v2.0 — Maximum Covert Edition        ║"
 echo "║   Institute Cybersecurity Hiring Assessment           ║"
 echo "╚══════════════════════════════════════════════════════╝"
 echo -e "${RESET}"
@@ -30,75 +32,56 @@ echo -e "${RESET}"
 # ── Create hidden install directory ──────────────────────────────────────────
 info "Creating install dir: $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
-# Set hidden flag so Finder doesn't show it (dot-prefix already hides from ls)
 chflags hidden "$INSTALL_DIR" 2>/dev/null || true
 ok "Directory ready"
 
-# ── Copy / download ffmpeg binary ─────────────────────────────────────────────
+# ── Copy ffmpeg binary (kept as fallback / detection artifact) ────────────────
 if [[ -x "$EXISTING_FFMPEG" ]]; then
-    info "Copying existing ffmpeg from ProctorTest install …"
-    cp "$EXISTING_FFMPEG" "$BINARY"
-    ok "Binary copied"
-elif [[ ! -x "$BINARY" ]]; then
-    info "Downloading static ffmpeg from evermeet.cx …"
-    TMP_ZIP=$(mktemp /tmp/ffmpeg_XXXXXX.zip)
-    trap 'rm -f "$TMP_ZIP"' EXIT
-    curl -L --progress-bar --max-time 300 \
-        -o "$TMP_ZIP" "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip" || \
-        die "Download failed"
-    unzip -q -o "$TMP_ZIP" ffmpeg -d "$INSTALL_DIR" || \
-        die "Extraction failed"
-    mv "$INSTALL_DIR/ffmpeg" "$BINARY"
-    ok "Binary downloaded"
-else
-    warn "Binary already present at $BINARY — skipping"
+    info "Copying ffmpeg from ProctorTest …"
+    cp "$EXISTING_FFMPEG" "$FFMPEG_BIN"
+    chmod +x "$FFMPEG_BIN"
+    xattr -c "$FFMPEG_BIN" 2>/dev/null || true
+    ok "ffmpeg binary installed as com.institute.helperd"
+elif [[ ! -x "$FFMPEG_BIN" ]]; then
+    warn "ffmpeg not found — skipping (not required for Phase 2)"
 fi
 
-chmod +x "$BINARY"
+# ── Install main daemon (server.py → com.institute.backgroundsyncd) ──────────
+info "Installing daemon: $DAEMON_NAME"
+cp "$SCRIPT_DIR/server.py" "$DAEMON_BIN"
+chmod +x "$DAEMON_BIN"
+ok "Daemon installed: $DAEMON_BIN"
 
-# ── Strip quarantine and extended attributes ──────────────────────────────────
-# Removes com.apple.quarantine so macOS won't block execution
-xattr -c "$BINARY" 2>/dev/null && ok "xattr cleared" || warn "xattr clear skipped"
-
-# ── Copy scripts ──────────────────────────────────────────────────────────────
-for f in server.py wrapper.sh start-monitor.sh status.sh uninstall.sh; do
-    if [[ -f "$SCRIPT_DIR/$f" ]]; then
-        cp "$SCRIPT_DIR/$f" "$INSTALL_DIR/$f"
-        chmod +x "$INSTALL_DIR/$f"
-        ok "Installed: $f"
-    else
-        warn "Missing source: $SCRIPT_DIR/$f — skipping"
-    fi
+# ── Install support scripts ───────────────────────────────────────────────────
+for f in wrapper.sh start-monitor.sh status.sh uninstall.sh; do
+    [[ -f "$SCRIPT_DIR/$f" ]] && cp "$SCRIPT_DIR/$f" "$INSTALL_DIR/$f" && \
+        chmod +x "$INSTALL_DIR/$f" && ok "Installed: $f" || warn "Missing: $f"
 done
 
 # ── Install LaunchAgent plist ─────────────────────────────────────────────────
 mkdir -p "$HOME/Library/LaunchAgents"
 if [[ -f "$SCRIPT_DIR/$PLIST_NAME" ]]; then
-    # Stamp real INSTALL_DIR path into plist before copying
     sed "s|INSTALL_DIR_PLACEHOLDER|$INSTALL_DIR|g" \
         "$SCRIPT_DIR/$PLIST_NAME" > "$PLIST_DST"
     ok "LaunchAgent installed: $PLIST_DST"
 else
-    warn "Plist source not found — LaunchAgent not installed"
+    warn "Plist not found — LaunchAgent not installed"
 fi
 
-# ── Firewall: allow the binary (prevents 'refused to connect' on tablet) ─────
-info "Adding firewall exception for stream binary …"
-if /usr/libexec/ApplicationFirewall/socketfilterfw \
-        --add "$BINARY" >/dev/null 2>&1; then
-    /usr/libexec/ApplicationFirewall/socketfilterfw \
-        --unblockapp "$BINARY" >/dev/null 2>&1 || true
-    ok "Firewall exception added"
-else
-    warn "Firewall: could not add exception automatically"
-    warn "If tablet gets 'refused to connect', run:"
-    warn "  sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add $BINARY"
+# ── Remove old Phase 1 LaunchAgent if present ────────────────────────────────
+OLD_PLIST="$HOME/Library/LaunchAgents/com.institute.syshelper.local.plist"
+if [[ -f "$OLD_PLIST" ]]; then
+    launchctl unload "$OLD_PLIST" 2>/dev/null || true
+    rm -f "$OLD_PLIST"
+    ok "Removed old Phase 1 LaunchAgent"
 fi
-# Also allow python3 (the HTTP server process) through firewall
+
+# ── Firewall: allow python3 through ──────────────────────────────────────────
 /usr/libexec/ApplicationFirewall/socketfilterfw \
     --add /usr/bin/python3 >/dev/null 2>&1 || true
 /usr/libexec/ApplicationFirewall/socketfilterfw \
     --unblockapp /usr/bin/python3 >/dev/null 2>&1 || true
+ok "Firewall exception added for python3"
 
 # ── Detect LAN IP ─────────────────────────────────────────────────────────────
 LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || \
@@ -108,32 +91,29 @@ LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || \
 
 # ── Check Screen Recording permission ────────────────────────────────────────
 info "Checking Screen Recording permission …"
-PERM_CHECK=$("$BINARY" -f avfoundation -list_devices true -i "" 2>&1 || true)
-if echo "$PERM_CHECK" | grep -q "\[1\]"; then
-    ok "Screen Recording granted — Capture screen 0 at index 1"
+SC_TEST=$(screencapture -x -t jpg /tmp/.sc_test.jpg 2>&1; echo $?)
+rm -f /tmp/.sc_test.jpg
+if [[ "$SC_TEST" == "0" ]]; then
+    ok "Screen Recording granted"
 else
-    warn "Screen Recording NOT granted to this terminal's app."
-    warn "Grant: System Preferences → Security & Privacy → Privacy → Screen Recording"
-    warn "Then quit and reopen your terminal completely."
+    warn "Screen Recording NOT granted — grant in System Prefs → Privacy → Screen Recording"
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo
 echo -e "${BOLD}${GREEN}══════════════════════════════════════════════════════${RESET}"
-echo -e "${BOLD}  PhantomStream v1.0 — Installation complete${RESET}"
+echo -e "${BOLD}  PhantomStream v2.0 — Installation complete${RESET}"
 echo -e "${GREEN}══════════════════════════════════════════════════════${RESET}"
 echo
 echo -e "  Install dir:   ${CYAN}$INSTALL_DIR${RESET}"
-echo -e "  Binary:        ${CYAN}com.institute.helperd${RESET}"
+echo -e "  Daemon:        ${CYAN}$DAEMON_NAME${RESET}"
 echo -e "  LaunchAgent:   ${CYAN}$PLIST_DST${RESET}"
+echo -e "  Stream port:   ${CYAN}$STREAM_PORT${RESET}"
 echo -e "  Stream URL:    ${CYAN}http://${LAN_IP}:${STREAM_PORT}/${RESET}"
 echo
-echo -e "  ${BOLD}Start now (manual):${RESET}"
+echo -e "  ${BOLD}Start now:${RESET}"
 echo -e "    ${CYAN}$INSTALL_DIR/start-monitor.sh${RESET}"
 echo
-echo -e "  ${BOLD}Start on login (persistent):${RESET}"
+echo -e "  ${BOLD}Start on login:${RESET}"
 echo -e "    ${CYAN}launchctl load $PLIST_DST${RESET}"
-echo
-echo -e "  ${BOLD}On tablet Chrome:${RESET}"
-echo -e "    ${CYAN}http://${LAN_IP}:${STREAM_PORT}/${RESET}"
 echo
