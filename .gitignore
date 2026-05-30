@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+stream.pid
+ffmpeg.pid
+stream.log
+launchd.log
