@@ -152,26 +152,35 @@ def _handle_client(conn: socket.socket) -> None:
 
 
 def _capture_loop(log_fh) -> None:
-    """Capture screen every 333ms using screencapture.
+    """Capture screen every 400ms (2.5fps) using screencapture + sips resize.
     No persistent avfoundation session = no TCC stale-frame bug.
-    Each call is a fresh system-level grab of the current display.
+    sips resizes 1440x900 → 800x500 + JPEG q60 → ~40-80KB per frame.
     """
+    raw = FRAME_FILE + ".raw"
     tmp = FRAME_FILE + ".tmp"
     while True:
         try:
             r = subprocess.run(
-                ["screencapture", "-x", "-t", "jpg", tmp],
+                ["screencapture", "-x", "-t", "jpg", raw],
                 capture_output=True, timeout=4
             )
-            if r.returncode == 0 and os.path.getsize(tmp) > 0:
-                os.replace(tmp, FRAME_FILE)  # atomic — no torn reads
+            if r.returncode == 0 and os.path.getsize(raw) > 0:
+                subprocess.run(
+                    ["sips", "-z", "500", "800",
+                     "-s", "format", "jpeg",
+                     "-s", "formatOptions", "60",
+                     raw, "--out", tmp],
+                    capture_output=True, timeout=4
+                )
+                if os.path.getsize(tmp) > 0:
+                    os.replace(tmp, FRAME_FILE)
             else:
-                log_fh.write(f"[capture] screencapture failed rc={r.returncode} {r.stderr}\n")
+                log_fh.write(f"[capture] screencapture failed rc={r.returncode}\n")
                 log_fh.flush()
         except Exception as e:
             log_fh.write(f"[capture] error: {e}\n")
             log_fh.flush()
-        time.sleep(0.333)
+        time.sleep(0.4)  # 2.5fps — easier on i5-5350U
 
 
 def main() -> None:
