@@ -92,48 +92,82 @@ after process restart due to TCC permission state degradation — no error logge
 
 ---
 
+## What Makes This Build Easily Detectable
+
+These are the **weakest points** of the current build — what a competent defender finds first.
+
+### 🔴 Trivial (found in under 60 seconds)
+
+| Vector | Command | What it reveals |
+|--------|---------|----------------|
+| Open port | `lsof -iTCP:49213 -sTCP:LISTEN` | python3 listening on non-standard port |
+| python3 process | `ps aux \| grep server.py` | Full path to `server.py` in hidden dir exposed |
+| Browsing to port | `http://localhost:49213/` | Live Mac screen displayed immediately — game over |
+| Screen Recording permission | System Prefs → Privacy → Screen Recording | Terminal/python3 has permission — not normal |
+| screencapture flashes | Activity Monitor (all processes) | `screencapture` appears every 400ms — highly unusual |
+
+### 🟡 Easy (found within 5 minutes)
+
+| Vector | Command | What it reveals |
+|--------|---------|----------------|
+| Hidden folder | `ls -la ~/Library/` | `.AppleDiagnostics` — dot-prefix hides from Finder but not terminal |
+| Folder contents | `ls ~/Library/.AppleDiagnostics/` | `server.py`, `wrapper.sh`, PID files, logs — entire operation exposed |
+| LaunchAgent name | `ls ~/Library/LaunchAgents/ \| grep institute` | "institute" is not a real Apple namespace |
+| LaunchAgent loaded | `launchctl list \| grep institute` | Confirms persistence across reboots |
+| Network traffic | `tcpdump -i lo0 port 49213` | Plaintext HTTP JPEG frames — no encryption |
+
+### 🟠 Medium (requires deliberate investigation)
+
+| Vector | Command | What it reveals |
+|--------|---------|----------------|
+| LaunchAgent config | `cat ~/Library/LaunchAgents/com.institute.syshelper.local.plist` | `wrapper.sh` path, `Nice 10`, `RunAtLoad true` |
+| Binary identification | `file ~/Library/.AppleDiagnostics/com.institute.helperd` | Mach-O binary disguised as a system helper |
+| Binary strings | `strings com.institute.helperd \| grep -i ffmpeg` | Reveals it is a renamed ffmpeg binary |
+| Wireshark capture | Filter: `tcp.port == 49213` | Captures live JPEG frames of Mac screen |
+
+### 🟢 Hard (advanced only)
+
+| Vector | Method | What it reveals |
+|--------|--------|----------------|
+| Port origin under SSH | `lsof -iTCP:49213` over remote session | Process tree shows launchd → wrapper.sh → python3 |
+| Filesystem timeline | `ls -ltu ~/Library/.AppleDiagnostics/` | Creation time reveals when attack was set up |
+
+---
+
 ## Judge Checklist — Defender Scoring
 
 Defenders are scored on how many vectors they find. Each = 1 point.
 
-### Process layer (Activity Monitor / ps)
-- [ ] `ps aux | grep -E 'helperd|server.py'` — finds both processes
-- [ ] Activity Monitor → search `helperd` → finds capture process
-- [ ] Activity Monitor → search `python3` → finds HTTP server
-- [ ] `ps aux | grep python3` → shows `server.py` in command args
+### Process layer
+- [ ] `ps aux | grep server.py` — finds HTTP server process + full path
+- [ ] Activity Monitor → search `python3` — finds server
+- [ ] Activity Monitor → all processes → spots `screencapture` flashing every 400ms
+- [ ] System Prefs → Privacy → Screen Recording → Terminal or python3 listed
 
 ### Network layer
-- [ ] `lsof -iTCP:49213` — shows listening socket
-- [ ] `netstat -an | grep 49213` — shows LISTEN state
-- [ ] `nmap -p 49213 192.168.0.102` from tablet — finds open port
-- [ ] Browsing to `http://192.168.0.102:49213/` shows live screen
+- [ ] `lsof -iTCP:49213` — listening socket on non-standard port
+- [ ] `netstat -an | grep 49213` — LISTEN state confirmed
+- [ ] Browse to `http://127.0.0.1:49213/` — live Mac screen visible
+- [ ] `tcpdump -i lo0 port 49213` — captures plaintext JPEG traffic
 
 ### Filesystem layer
-- [ ] `ls -la ~/Library/` — dot-folder `.AppleDiagnostics` visible
-- [ ] `ls ~/Library/.AppleDiagnostics/` — full file list exposed
-- [ ] `file ~/Library/.AppleDiagnostics/com.institute.helperd` — identifies as Mach-O binary
-- [ ] `strings com.institute.helperd | grep ffmpeg` — finds ffmpeg strings
+- [ ] `ls -la ~/Library/` — reveals `.AppleDiagnostics` hidden folder
+- [ ] `ls ~/Library/.AppleDiagnostics/` — full operation exposed
+- [ ] `cat ~/Library/.AppleDiagnostics/server.py` — reads source code
+- [ ] `strings com.institute.helperd | grep ffmpeg` — binary identified
 
 ### Persistence layer
 - [ ] `ls ~/Library/LaunchAgents/ | grep institute` — finds plist
-- [ ] `launchctl list | grep institute` — shows loaded agent
-- [ ] `cat ~/Library/LaunchAgents/com.institute.syshelper.local.plist` — reads full config
-
-### Firewall layer
-- [ ] System Prefs → Security → Firewall Options — shows `com.institute.helperd` exception
-- [ ] `sudo /usr/libexec/ApplicationFirewall/socketfilterfw --listapps` — lists exception
-
-### Traffic layer (advanced)
-- [ ] Wireshark / tcpdump on port 49213 — captures HTTP MJPEG traffic
-- [ ] Identifies `multipart/x-mixed-replace` content type in headers
+- [ ] `launchctl list | grep institute` — confirms auto-start on login
+- [ ] `cat ~/Library/LaunchAgents/com.institute.syshelper.local.plist` — full config
 
 ---
 
 ## Self-Detection Commands (Attacker Reference)
 
 ```bash
-# Verify both processes running
-ps aux | grep -E 'helperd|server.py' | grep -v grep
+# Verify stream server running
+ps aux | grep server.py | grep -v grep
 
 # Verify port open
 lsof -iTCP:49213 -sTCP:LISTEN
@@ -153,18 +187,4 @@ launchctl list | grep institute
 ~/Library/.AppleDiagnostics/uninstall.sh
 ```
 
-Kills processes, unloads LaunchAgent, removes all files, removes firewall exception.
-
----
-
-## Detection Difficulty Rating
-
-| Vector | Difficulty | Notes |
-|--------|-----------|-------|
-| Activity Monitor (by name) | Medium | `helperd` is not a real Apple process |
-| `ps aux` grep | Easy | process args reveal `server.py` |
-| `lsof` port scan | Easy | open port found immediately |
-| LaunchAgents folder | Medium | name looks plausible but `institute` is odd |
-| `ls -la ~/Library/` | Medium | requires `-la` flag; dot-folder hidden from Finder |
-| Wireshark | Hard | requires network capture setup |
-| Strings on binary | Hard | requires knowing to look at the binary |
+Kills processes, unloads LaunchAgent, removes all files.
