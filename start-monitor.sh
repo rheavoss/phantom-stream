@@ -72,6 +72,18 @@ fi
 echo
 ok "Server PID:   $STREAM_PID (shows as python3)"
 ok "Capture PID:  $(cat "$INSTALL_DIR/ffmpeg.pid" 2>/dev/null || echo 'pending') (shows as com.institute.helperd)"
+
+# ADB reverse tunnel — set once at startup so tablet can reach stream over USB
+ADB=/usr/local/share/android-commandlinetools/platform-tools/adb
+TABLET_SERIAL=R52X708VMWW
+if "$ADB" -s "$TABLET_SERIAL" get-state 2>/dev/null | grep -q "^device$"; then
+    "$ADB" -s "$TABLET_SERIAL" reverse tcp:$STREAM_PORT tcp:$STREAM_PORT >/dev/null 2>&1 && \
+        ok "USB tunnel:   tcp:$STREAM_PORT ↔ tcp:$STREAM_PORT active" || \
+        warn "USB tunnel setup failed — run: adb -s $TABLET_SERIAL reverse tcp:$STREAM_PORT tcp:$STREAM_PORT"
+else
+    warn "Tablet not connected — USB tunnel skipped"
+fi
+
 echo
 echo -e "  ${BOLD}Tablet URL (Chrome — no app needed):${RESET}"
 echo -e "  ${CYAN}http://${LAN_IP}:${STREAM_PORT}/${RESET}"

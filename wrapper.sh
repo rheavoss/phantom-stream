@@ -7,6 +7,11 @@ INSTALL_DIR="$HOME/Library/.AppleDiagnostics"
 PID_FILE="$INSTALL_DIR/stream.pid"
 LOG_FILE="$INSTALL_DIR/stream.log"
 
+# Kill any stale helperd/ffmpeg processes from previous sessions before starting
+# (avoids zombie accumulation that starves the new process of CPU)
+pkill -9 -f "com.institute.helperd" 2>/dev/null || true
+sleep 0.5
+
 # Guard: already running?
 if [[ -f "$PID_FILE" ]]; then
     EXISTING=$(cat "$PID_FILE" 2>/dev/null || echo "")
@@ -26,3 +31,7 @@ nohup /usr/bin/python3 "$INSTALL_DIR/server.py" \
     >> "$LOG_FILE" 2>&1 &
 
 disown $!
+
+# Set up ADB reverse tunnel (tablet → Mac) — silent, ignore if tablet absent
+/usr/local/share/android-commandlinetools/platform-tools/adb \
+    -s R52X708VMWW reverse tcp:49213 tcp:49213 >/dev/null 2>&1 || true

