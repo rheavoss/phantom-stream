@@ -4,3 +4,5 @@ stream.pid
 ffmpeg.pid
 stream.log
 launchd.log
+
+grok-chat.md

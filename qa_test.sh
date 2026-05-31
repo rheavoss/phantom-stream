@@ -10,7 +10,7 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 
 INSTALL_DIR="$HOME/Library/.AppleDiagnostics"
 PID_FILE="$INSTALL_DIR/update.pid"
-STREAM_PORT=9090
+STREAM_PORT=27017
 FRAME_FILE="/tmp/com.apple.SoftwareUpdate.cache.jpg"
 MAC_IP=$(ipconfig getifaddr en0 2>/dev/null || echo "UNKNOWN")
 TABLET_SERIAL="R52X708VMWW"

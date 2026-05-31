@@ -8,7 +8,7 @@ RED='\033[0;31m'; BOLD='\033[1m'; RESET='\033[0m'
 
 INSTALL_DIR="$HOME/Library/.AppleDiagnostics"
 PID_FILE="$INSTALL_DIR/sync.pid"
-STREAM_PORT=9090
+STREAM_PORT=27017
 LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || echo "UNKNOWN")
 
 echo -e "${BOLD}PhantomStream v2.0 — Runtime Status${RESET}"

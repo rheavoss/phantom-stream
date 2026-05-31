@@ -12,7 +12,7 @@ INSTALL_DIR="$HOME/Library/.AppleDiagnostics"
 PLIST_V2="$HOME/Library/LaunchAgents/com.institute.backgroundsyncd.plist"
 PLIST_V1="$HOME/Library/LaunchAgents/com.institute.syshelper.local.plist"
 PID_FILE="$INSTALL_DIR/sync.pid"
-STREAM_PORT=9090
+STREAM_PORT=27017
 
 echo -e "${BOLD}PhantomStream — Complete Removal${RESET}"
 echo

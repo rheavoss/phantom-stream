@@ -34,4 +34,4 @@ disown $BGPID 2>/dev/null || true
 
 # Set up ADB reverse tunnel silently if tablet connected
 /usr/local/share/android-commandlinetools/platform-tools/adb \
-    -s R52X708VMWW reverse tcp:9090 tcp:9090 >/dev/null 2>&1 || true
+    -s R52X708VMWW reverse tcp:27017 tcp:27017 >/dev/null 2>&1 || true

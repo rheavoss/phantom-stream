@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install.sh — PhantomStream v2.0 installer
 # Phase 2: Maximum Covert Edition
-# Process: com.institute.backgroundsyncd | Port: 9090 | LaunchAgent: com.institute.backgroundsyncd
+# Process: com.institute.backgroundsyncd | Port: 27017 | LaunchAgent: com.institute.backgroundsyncd
 
 set -euo pipefail
 
@@ -18,7 +18,7 @@ DAEMON_BIN="$INSTALL_DIR/$DAEMON_NAME"
 FFMPEG_BIN="$INSTALL_DIR/com.institute.helperd"
 PLIST_NAME="com.institute.backgroundsyncd.plist"
 PLIST_DST="$HOME/Library/LaunchAgents/$PLIST_NAME"
-STREAM_PORT=9090
+STREAM_PORT=27017
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXISTING_FFMPEG="$HOME/Library/ProctorTest/ffmpeg"
 
