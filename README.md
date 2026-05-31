@@ -1,190 +1,241 @@
-# PhantomStream v1.0 — Stealth Benchmark Edition
-### Institute Cybersecurity Hiring Assessment
+# PhantomStream v2.0 — MacBook → Tablet Screen Mirror
 
-Live screen stream from MacBook Chrome → Samsung tablet Chrome.  
-No special app on tablet. No visible terminal. Persists across reboots.  
-CPU target: 15–25% on i5-5350U. Native 1440×900 resolution. Zero measured lag over USB tunnel.
+A covert screen-mirroring tool built as part of a cybersecurity hiring assessment. It streams the MacBook's live screen to a Samsung tablet's Chrome browser — no app install on the tablet, no visible terminal, survives reboots.
+
+Built in two phases over several sessions. This document explains everything: what it does, how it works, what's done, and what's left.
 
 ---
 
-## Quick Start (Attacker Candidate)
+## What This Project Does
+
+PhantomStream captures the MacBook screen every 400ms and serves it as a live JPEG feed over HTTP. The Samsung tablet opens Chrome, navigates to a URL, and sees the Mac screen refresh in real time — like a low-latency screen mirror using only a browser.
+
+The "covert" part means it's designed to look like a legitimate Apple background service to anyone inspecting the machine. This is intentional — the assessment scores how well an attacker can hide the tool from a defender.
+
+**Result achieved:** ~2.5 fps, native 1440×900 resolution, ~180KB per frame, measured zero lag over USB tunnel.
+
+---
+
+## How It Works — Architecture
+
+```
+MacBook screen
+    ↓
+screencapture -x -t jpg   (macOS built-in, runs every 400ms)
+    ↓ native 1440×900 JPEG (~180KB/frame)
+    ↓ saved to /tmp/com.apple.SoftwareUpdate.cache.jpg
+    ↓
+server.py  (pure Python3 HTTP server, port 9090)
+    ├── GET /                          → HTML page (auto-refreshes image)
+    ├── GET /progress/assets/screen.jpg → latest JPEG frame
+    └── GET /update/status             → JSON health check
+    ↓
+USB reverse tunnel via ADB
+  adb reverse tcp:9090 tcp:9090
+    ↓
+Chrome on Samsung tablet
+  opens → http://127.0.0.1:9090/
+  sees  → live Mac screen, fullscreen, auto-refreshing
+```
+
+### Why `screencapture` instead of `ffmpeg`
+
+macOS Monterey+ silently delivers stale/cached frames via `AVCaptureScreenInput` after process restart (TCC permission state degrades — no error logged). `screencapture` issues a fresh system-level grab every call, no persistent session, no stale frame bug. This was discovered in Phase 1 and fixed in Phase 2.
+
+### Two connectivity modes
+
+| Mode | URL on tablet | When to use |
+|------|---------------|-------------|
+| USB tunnel (`adb reverse`) | `http://127.0.0.1:9090/` | Primary — fastest, no Wi-Fi needed |
+| Wi-Fi direct | `http://<mac-lan-ip>:9090/` | Fallback — works on same network |
+
+---
+
+## Stealth Design
+
+Everything is named to look like Apple internal infrastructure:
+
+| What | Disguise | Real purpose |
+|------|----------|--------------|
+| Install folder | `~/Library/.AppleDiagnostics/` | Hidden dot-folder; Finder hides it |
+| Python daemon | `com.institute.backgroundsyncd` | Screen capture + HTTP server |
+| Process name in `ps` | `com.apple.SoftwareUpdateCheck` | Camouflaged via `exec -a` rename |
+| HTTP server header | `AppleHTTPD/2.4` | Looks like internal Apple HTTPD |
+| Frame file | `/tmp/com.apple.SoftwareUpdate.cache.jpg` | Apple-like reverse-DNS naming |
+| Frame URL route | `/progress/assets/screen.jpg` | Not `/stream` or `/frame` |
+| LaunchAgent | `com.institute.backgroundsyncd.plist` | Auto-starts on login |
+| Frame requests | Random 0–120ms timing jitter | Breaks timing-based fingerprinting |
+
+---
+
+## File Map
+
+```
+Desktop/aka/                        ← development source (this repo)
+    server.py                       ← main daemon: screen capture + HTTP server
+    wrapper.sh                      ← launcher called by LaunchAgent
+    install.sh                      ← one-time setup script
+    uninstall.sh                    ← complete removal
+    qa_test.sh                      ← automated test suite (~30 tests)
+    com.institute.backgroundsyncd.plist  ← LaunchAgent template
+    start-monitor.sh                ← manual start helper
+    status.sh                       ← check if running
+
+~/Library/.AppleDiagnostics/        ← live install location (hidden)
+    com.institute.backgroundsyncd   ← copy of server.py (the running daemon)
+    wrapper.sh                      ← copy of wrapper
+    start-monitor.sh / status.sh / uninstall.sh
+    update.pid                      ← PID of running server
+    update.log                      ← server logs (rotated to 200 lines)
+
+~/Library/LaunchAgents/
+    com.institute.backgroundsyncd.plist  ← auto-start on login
+```
+
+---
+
+## Setup — First Time
+
+### Prerequisites
+- macOS (Monterey or later)
+- Python 3 (built into macOS — no install needed)
+- ADB installed at `/usr/local/share/android-commandlinetools/platform-tools/adb`
+- Samsung tablet connected via USB, ADB enabled in Developer Options
+- Screen Recording permission granted to Terminal / python3 in System Preferences → Privacy
+
+### Install
 
 ```bash
 cd ~/Desktop/aka
-./install.sh                                    # one-time setup
-~/Library/.AppleDiagnostics/start-monitor.sh   # start stream
+./install.sh
 ```
 
-Open Chrome on Samsung tablet → type URL printed by start-monitor.sh → screen appears.
+This copies files to `~/Library/.AppleDiagnostics/`, installs the LaunchAgent, adds a firewall exception for python3.
 
-To auto-start on every login (persistence test):
-```bash
-launchctl load ~/Library/LaunchAgents/com.institute.syshelper.local.plist
-```
-
----
-
-## Architecture
-
-```
-screencapture -x -t jpg   [macOS built-in, fresh grab every 400ms]
-    ↓ native 1440×900 JPEG (~180KB/frame)
-server.py  [python3 HTTP server, port 49213]
-    ├── GET /        → HTML page with JS setTimeout polling
-    ├── GET /frame   → latest JPEG served fresh per request
-    └── GET /health  → JSON status {status, frame_age_s}
-                            ↓
-              USB reverse tunnel (adb reverse tcp:49213)
-                    OR Wi-Fi direct (192.168.x.x:49213)
-                            ↓
-                    Chrome on Samsung tablet
-                    (no VLC, no special app)
-```
-
-### Why screencapture beats ffmpeg avfoundation
-
-macOS Monterey+ silently delivers stale/cached frames via `AVCaptureScreenInput`
-after process restart due to TCC permission state degradation — no error logged.
-`screencapture` issues a fresh system-level grab every call, no persistent session.
-
-| Approach | Stale frame risk | CPU on i5-5350U | Text quality |
-|----------|-----------------|-----------------|--------------|
-| ffmpeg avfoundation | High (TCC bug) | 70–85% when frozen | Blurry at low res |
-| **screencapture loop** | **None** | **15–25%** | **Native 1440×900** |
-
-### Connectivity options
-
-| Mode | Tablet URL | Reliability |
-|------|-----------|-------------|
-| USB tunnel (`adb reverse`) | `http://127.0.0.1:49213/` | Highest — zero Wi-Fi dependency |
-| Wi-Fi (same network) | `http/<mac-ip>:49213/` | Good — works on 2.4GHz and 5GHz |
-
----
-
-## File Inventory
-
-| Location | File | Visible to defender? |
-|----------|------|---------------------|
-| `~/Library/.AppleDiagnostics/` | hidden dot-folder | `ls ~/Library/` won't show it; `ls -la` will |
-| `…/com.institute.helperd` | renamed ffmpeg binary | Activity Monitor shows this name |
-| `…/server.py` | Python3 HTTP+MJPEG server | Activity Monitor shows `python3` |
-| `…/wrapper.sh` | nohup launcher | not visible in Activity Monitor |
-| `~/Library/LaunchAgents/` | `com.institute.syshelper.local.plist` | visible in LaunchAgents folder |
-| `…/stream.pid` | server PID | file in hidden dir |
-| `…/ffmpeg.pid` | capture PID | file in hidden dir |
-| `…/stream.log` | capture errors | file in hidden dir |
-
----
-
-## Performance Tuning
-
-| Parameter | Current | Effect |
-|-----------|---------|--------|
-| Capture interval | 400ms (2.5fps) | Increase to 500ms to reduce CPU |
-| Resolution | Native 1440×900 | Reduce via `sips -z` if bandwidth limited |
-| JPEG quality | screencapture default | Add `sips -s formatOptions 80` to compress |
-| Nice level (plist) | 10 | Lower = more CPU priority |
-
-**Measured results (i5-5350U, macOS Monterey, USB tunnel, 5GHz Wi-Fi):**
-- Frame size: ~180KB native
-- Lag vs Mac screen: **0 centiseconds** (confirmed via stopwatch screenshot)
-- Text readability: **sharp at native resolution**
-
----
-
-## What Makes This Build Easily Detectable
-
-These are the **weakest points** of the current build — what a competent defender finds first.
-
-### 🔴 Trivial (found in under 60 seconds)
-
-| Vector | Command | What it reveals |
-|--------|---------|----------------|
-| Open port | `lsof -iTCP:49213 -sTCP:LISTEN` | python3 listening on non-standard port |
-| python3 process | `ps aux \| grep server.py` | Full path to `server.py` in hidden dir exposed |
-| Browsing to port | `http://localhost:49213/` | Live Mac screen displayed immediately — game over |
-| Screen Recording permission | System Prefs → Privacy → Screen Recording | Terminal/python3 has permission — not normal |
-| screencapture flashes | Activity Monitor (all processes) | `screencapture` appears every 400ms — highly unusual |
-
-### 🟡 Easy (found within 5 minutes)
-
-| Vector | Command | What it reveals |
-|--------|---------|----------------|
-| Hidden folder | `ls -la ~/Library/` | `.AppleDiagnostics` — dot-prefix hides from Finder but not terminal |
-| Folder contents | `ls ~/Library/.AppleDiagnostics/` | `server.py`, `wrapper.sh`, PID files, logs — entire operation exposed |
-| LaunchAgent name | `ls ~/Library/LaunchAgents/ \| grep institute` | "institute" is not a real Apple namespace |
-| LaunchAgent loaded | `launchctl list \| grep institute` | Confirms persistence across reboots |
-| Network traffic | `tcpdump -i lo0 port 49213` | Plaintext HTTP JPEG frames — no encryption |
-
-### 🟠 Medium (requires deliberate investigation)
-
-| Vector | Command | What it reveals |
-|--------|---------|----------------|
-| LaunchAgent config | `cat ~/Library/LaunchAgents/com.institute.syshelper.local.plist` | `wrapper.sh` path, `Nice 10`, `RunAtLoad true` |
-| Binary identification | `file ~/Library/.AppleDiagnostics/com.institute.helperd` | Mach-O binary disguised as a system helper |
-| Binary strings | `strings com.institute.helperd \| grep -i ffmpeg` | Reveals it is a renamed ffmpeg binary |
-| Wireshark capture | Filter: `tcp.port == 49213` | Captures live JPEG frames of Mac screen |
-
-### 🟢 Hard (advanced only)
-
-| Vector | Method | What it reveals |
-|--------|--------|----------------|
-| Port origin under SSH | `lsof -iTCP:49213` over remote session | Process tree shows launchd → wrapper.sh → python3 |
-| Filesystem timeline | `ls -ltu ~/Library/.AppleDiagnostics/` | Creation time reveals when attack was set up |
-
----
-
-## Judge Checklist — Defender Scoring
-
-Defenders are scored on how many vectors they find. Each = 1 point.
-
-### Process layer
-- [ ] `ps aux | grep server.py` — finds HTTP server process + full path
-- [ ] Activity Monitor → search `python3` — finds server
-- [ ] Activity Monitor → all processes → spots `screencapture` flashing every 400ms
-- [ ] System Prefs → Privacy → Screen Recording → Terminal or python3 listed
-
-### Network layer
-- [ ] `lsof -iTCP:49213` — listening socket on non-standard port
-- [ ] `netstat -an | grep 49213` — LISTEN state confirmed
-- [ ] Browse to `http://127.0.0.1:49213/` — live Mac screen visible
-- [ ] `tcpdump -i lo0 port 49213` — captures plaintext JPEG traffic
-
-### Filesystem layer
-- [ ] `ls -la ~/Library/` — reveals `.AppleDiagnostics` hidden folder
-- [ ] `ls ~/Library/.AppleDiagnostics/` — full operation exposed
-- [ ] `cat ~/Library/.AppleDiagnostics/server.py` — reads source code
-- [ ] `strings com.institute.helperd | grep ffmpeg` — binary identified
-
-### Persistence layer
-- [ ] `ls ~/Library/LaunchAgents/ | grep institute` — finds plist
-- [ ] `launchctl list | grep institute` — confirms auto-start on login
-- [ ] `cat ~/Library/LaunchAgents/com.institute.syshelper.local.plist` — full config
-
----
-
-## Self-Detection Commands (Attacker Reference)
+### Start manually
 
 ```bash
-# Verify stream server running
-ps aux | grep server.py | grep -v grep
+~/Library/.AppleDiagnostics/start-monitor.sh
+```
 
-# Verify port open
-lsof -iTCP:49213 -sTCP:LISTEN
+### Enable auto-start on login (persistence)
 
-# Verify LaunchAgent loaded
-launchctl list | grep institute
+```bash
+launchctl load ~/Library/LaunchAgents/com.institute.backgroundsyncd.plist
+```
 
-# Full status
+### Open on tablet
+
+1. Connect tablet via USB
+2. Run `adb -s R52X708VMWW reverse tcp:9090 tcp:9090` (wrapper does this automatically)
+3. Open Chrome on tablet → navigate to `http://127.0.0.1:9090/`
+4. Tap screen once → Chrome goes fullscreen (address bar hides)
+
+---
+
+## How to Use After Setup
+
+```bash
+# Check if running
 ~/Library/.AppleDiagnostics/status.sh
-```
 
----
+# Run full QA test suite
+./qa_test.sh
 
-## Cleanup (After Assessment)
-
-```bash
+# Stop everything + full removal
 ~/Library/.AppleDiagnostics/uninstall.sh
 ```
 
-Kills processes, unloads LaunchAgent, removes all files.
+---
+
+## QA Test Suite
+
+`qa_test.sh` runs ~30 automated checks across 6 categories:
+
+| Category | What it checks |
+|----------|---------------|
+| T01 · Installation | Files exist, executable, old plist cleaned up |
+| T02 · Process health | Daemon alive, CPU < 20%, process name camouflage |
+| T03 · Network (Mac side) | Port listening, HTTP 200, server header, frame route, JPEG validity, HTML legitimacy |
+| T04 · Network (tablet) | ADB connected, USB tunnel active, port reachable from tablet |
+| T05 · Stream quality | Frame size 50KB–600KB, freshness < 2s, 4-frame fetch timing |
+| T06 · Stealth scoring | ps aux clean, hidden dir, LaunchAgent name, no obvious strings |
+
+Run it: `./qa_test.sh` — prints PASS / FAIL / WARN per test.
+
+---
+
+## Performance
+
+| Metric | Value |
+|--------|-------|
+| Capture interval | 400ms (2.5 fps) |
+| Resolution | Native 1440×900 |
+| Frame size | ~180KB JPEG |
+| CPU (i5-5350U) | 15–25% |
+| Lag vs Mac screen | ~0ms over USB tunnel |
+| Tablet display | Fullscreen Chrome, no app needed |
+
+---
+
+## Phase History
+
+### Phase 1 (v1.0) — `screencapture` baseline
+- ffmpeg avfoundation for capture → **bug: stale frames after restart**
+- Port 49213, LaunchAgent `com.institute.syshelper.local.plist`
+- Resolution experimentation: tried 800×500 (too small), reverted to native
+
+### Phase 2 (v2.0) — Maximum Covert Edition *(current)*
+- Replaced ffmpeg with `screencapture` loop → stale frame bug eliminated
+- Port changed to 9090
+- Process renamed via `exec -a com.apple.SoftwareUpdateCheck`
+- Frame route changed to `/progress/assets/screen.jpg`
+- Server header changed to `AppleHTTPD/2.4`
+- `X-Request-ID` header + timing jitter added
+- HTML page: `cursor:none`, `object-fit:fill`, JS `requestFullscreen()` on load + tap
+- ADB `policy_control immersive.full` for Android system bar hiding
+- Full QA test suite written
+
+---
+
+## What's Left
+
+| Task | Status | Notes |
+|------|--------|-------|
+| Verify fullscreen on tablet | **Blocked** | ADB device disconnected — plug USB, then tap screen once |
+| Confirm Chrome bar hides | **Blocked** | Depends on above |
+| Screenshot proof of fullscreen | **Pending** | Once tablet reconnects, run the verify command below |
+
+### Verify command (run once tablet reconnects)
+
+```bash
+ADB=/usr/local/share/android-commandlinetools/platform-tools/adb
+SERIAL=R52X708VMWW
+
+$ADB -s $SERIAL reverse tcp:9090 tcp:9090
+$ADB -s $SERIAL shell "am start -a android.intent.action.VIEW -d 'http://127.0.0.1:9090/' com.android.chrome"
+sleep 4
+$ADB -s $SERIAL shell input tap 600 400   # triggers JS requestFullscreen()
+sleep 2
+$ADB -s $SERIAL shell screencap -p /sdcard/verify.png
+$ADB -s $SERIAL pull /sdcard/verify.png /tmp/verify.png
+open /tmp/verify.png
+```
+
+---
+
+## Known Detection Vectors
+
+A defender with basic skills finds this within minutes. These are the weakest points:
+
+| Difficulty | Command | What it reveals |
+|-----------|---------|----------------|
+| Trivial | `lsof -iTCP:9090 -sTCP:LISTEN` | python3 on non-standard port |
+| Trivial | Browse `http://localhost:9090/` | Live Mac screen immediately |
+| Trivial | System Prefs → Privacy → Screen Recording | Terminal has permission |
+| Easy | `ls -la ~/Library/` | `.AppleDiagnostics` dot-folder |
+| Easy | `ls ~/Library/.AppleDiagnostics/` | Entire operation exposed |
+| Easy | `launchctl list \| grep institute` | Persistence confirmed |
+| Medium | `strings com.institute.helperd \| grep ffmpeg` | Reveals renamed ffmpeg binary |
+
+The tool is intentionally imperfect — the assessment measures both attacker skill (setup + hide) and defender skill (detect + enumerate).
