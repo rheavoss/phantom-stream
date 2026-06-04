@@ -37,7 +37,7 @@ HTML = (
     b"<img id='f' src='/progress/assets/screen.jpg'>"
     b"<script>"
     b"var el=document.getElementById('f');"
-    b"var I=400,R=900;"
+    b"var I=150,R=900;"
     b"function fs(){var d=document.documentElement;"
     b"(d.requestFullscreen||d.webkitRequestFullscreen||d.mozRequestFullScreen).call(d)}"
     b"document.addEventListener('click',fs);"
@@ -146,7 +146,7 @@ def _capture(log_fh) -> None:
         except Exception as e:
             log_fh.write(f"[capture] {e}\n")
             log_fh.flush()
-        time.sleep(0.4)
+        time.sleep(0.15)
 
 
 def main() -> None:
