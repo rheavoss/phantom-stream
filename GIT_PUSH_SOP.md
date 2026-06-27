@@ -1,17 +1,12 @@
-# Git Push SOP — PhantomStream / aka
+# Git Push SOP — PhantomStream
 
 ## Credential Setup (one-time per machine)
 
-Token is embedded in the remote URL. Get it from the Instagram repo:
+Uses `gh` CLI keyring — no PAT in URL or file.
 ```bash
-git -C ~/Desktop/Instagram/00_agency remote get-url origin
+gh auth switch --user rheavoss
 ```
-Then set it here:
-```bash
-git -C ~/Desktop/phantom-stream remote set-url origin \
-  "https://rheavoss:<TOKEN>@github.com/rheavoss/phantom-stream.git"
-```
-Run once in Terminal. After that, `git push` works with no auth prompt.
+That's it. `gh` already has rheavoss token in keyring.
 
 ---
 
@@ -31,7 +26,8 @@ git status                        # see what changed
 git diff --stat                   # confirm scope
 git add file1 file2 file3         # specific files only — never git add -A
 git commit -m "type: description"
-git push origin main
+gh auth switch --user rheavoss
+git -c credential.helper="gh auth git-credential" push origin main
 ```
 
 ---
