@@ -8,7 +8,7 @@ git -C ~/Desktop/Instagram/00_agency remote get-url origin
 ```
 Then set it here:
 ```bash
-git -C ~/Desktop/aka remote set-url origin \
+git -C ~/Desktop/phantom-stream remote set-url origin \
   "https://rheavoss:<TOKEN>@github.com/rheavoss/phantom-stream.git"
 ```
 Run once in Terminal. After that, `git push` works with no auth prompt.
@@ -40,5 +40,5 @@ git push origin main
 
 | Dir | Repo |
 |-----|------|
-| `~/Desktop/aka` | `rheavoss/phantom-stream` |
+| `~/Desktop/phantom-stream` | `rheavoss/phantom-stream` |
 | `~/Desktop/Instagram/00_agency` | `rheavoss/virtual-influencer-studio` |

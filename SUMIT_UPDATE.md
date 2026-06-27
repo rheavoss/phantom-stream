@@ -28,7 +28,7 @@
 ## What You Need To Do
 
 ```bash
-cd ~/Desktop/aka
+cd ~/Desktop/phantom-stream
 git pull
 ./install.sh
 ```

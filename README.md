@@ -71,7 +71,7 @@ Everything is named to look like Apple internal infrastructure:
 ## File Map
 
 ```
-Desktop/aka/                        ← development source (this repo)
+Desktop/phantom-stream/             ← development source (this repo)
     server.py                       ← main daemon: screen capture + HTTP server
     wrapper.sh                      ← launcher called by LaunchAgent
     install.sh                      ← one-time setup script
@@ -106,7 +106,7 @@ Desktop/aka/                        ← development source (this repo)
 ### Install
 
 ```bash
-cd ~/Desktop/aka
+cd ~/Desktop/phantom-stream
 ./install.sh
 ```
 
